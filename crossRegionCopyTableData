@@ -1,0 +1,143 @@
+/**
+ * Created by Amulya kashyap on 4/26/17.
+ */
+
+
+const AWS = require('aws-sdk');
+const Promise = require('bluebird');
+const fs = Promise.promisifyAll(require('fs'));
+AWS.config.setPromisesDependency(Promise);
+
+const dynamoClient = new AWS.DynamoDB.DocumentClient();
+
+exports.copyData = (tableArray, credentials, oldRegion, newregion)=> {
+
+    return Promise.coroutine(
+        function *() {
+
+            if (!tableArray || !credentials.accessKeyId || !credentials.secretAccessKey || !oldRegion || !newregion) {
+                return {
+                    statusCode: 400,
+                    message: "All parameters required",
+                    type: "FAILED"
+                };
+            }
+
+            AWS.config.update({
+                accessKeyId: credentials.accessKeyId,
+                secretAccessKey: credentials.secretAccessKey,
+                region: oldRegion
+            });
+
+            try {
+                let dataToBeCopied = yield fetchDataFromOldRegionTable(tableArray);
+
+                yield putBulkDataInNewRegionTable(dataToBeCopied, credentials, newregion);
+
+                return {
+                    statusCode: 200,
+                    message: "All table data copied successfully",
+                    type: "SUCCESS"
+                };
+            } catch (err) {
+                return err;
+            }
+        }
+    )().catch((ex)=> {
+        console.log(ex);
+        return ex;
+    });
+};
+
+const fetchDataFromOldRegionTable = (tableArray)=> {
+
+    return Promise.coroutine(
+        function *() {
+            
+            let tablesArray = tableArray;
+            let promiseArray = [];
+
+            for (let i in tablesArray) {
+                promiseArray.push(scanTable(tablesArray[i]));
+            }
+
+            return yield Promise.all(promiseArray);
+
+        }
+    )().catch((ex)=> {
+        console.log(ex);
+        return ex;
+    });
+};
+
+const scanTable = (tableName)=> {
+
+    return Promise.coroutine(
+        function *() {
+
+            try {
+
+                let allData = yield dynamoClient.scan({
+                    TableName: tableName
+                }).promise();
+
+                return {
+                    TableName: tableName,
+                    TableData: allData.Items
+                };
+
+            } catch (err) {
+                return err;
+            }
+        }
+    )().catch((ex)=> {
+        return ex;
+    });
+};
+
+const putBulkDataInNewRegionTable = (data, credentials, newregion)=> {
+
+    AWS.config.update({
+        accessKeyId: credentials.accessKeyId,
+        secretAccessKey: credentials.secretAccessKey,
+        region: newregion
+    });
+
+    return Promise.coroutine(
+        function *() {
+
+            let params = {};
+            params["RequestItems"] = {};
+
+            for (let i in data) {
+
+                let currTable = data[i].TableName;
+                let currDataArray = data[i].TableData;
+
+                if (!params["RequestItems"][currTable] || params["RequestItems"][currTable].length <= 0) {
+                    params["RequestItems"][currTable] = [];
+                }
+
+                for (let j in currDataArray) {
+
+                    params["RequestItems"][currTable].push({
+                        PutRequest: {
+                            Item: currDataArray[j]
+                        }
+                    });
+                }
+            }
+
+            try {
+
+                return yield dynamoClient.batchWrite(params).promise();
+
+            } catch (err) {
+                return err;
+            }
+        }
+    )().catch((ex)=> {
+        console.log(ex);
+        return ex;
+    });
+};
